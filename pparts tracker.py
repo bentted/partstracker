@@ -77,13 +77,13 @@ def part_selection():
     part_number = part_number + mix
     while True:
         try:
-            numparts = int(input("Enter number of parts: "))
+            numparts = int(input("Enter number of parts made: "))
             if numparts < 0:
                 raise ValueError
             break
         except ValueError:
-            print("Please enter a valid non-negative integer for number of parts.")
-    print("Part number: " + part_number + ", Number of parts: " + str(numparts))
+            print("Please enter a valid non-negative integer for number of parts made.")
+    print("Part number: " + part_number + ", Number of parts made: " + str(numparts))
     return part_number, numparts
 
 
@@ -103,9 +103,9 @@ def scrap_reason(numparts):
         except ValueError:
             print("Please enter a valid number between 0 and " + str(numparts) + ".")
 
-    totalparts = numparts - scrap_parts
-    print("Total good parts: " + str(totalparts))
-    return totalparts
+    good_parts = numparts - scrap_parts
+    print("Total good parts: " + str(good_parts))
+    return good_parts, scrap_parts
 
 
 def main():
@@ -117,10 +117,10 @@ def main():
     print(order.summary())
 
     while order.parts_remaining() > 0:
-        good_parts = scrap_reason(order.parts_remaining())
-        scrap_parts = order.parts_per_order - order.parts_remaining() - good_parts
+        print(f"Total parts to be made: {order.parts_per_order}")
+        good_parts, scrap_parts = scrap_reason(order.parts_remaining())
         order.update_order(good_parts, scrap_parts)
-        print(order.summary())
+        print(f"Parts remaining: {order.parts_remaining()}")
 
     Order.save_orders(orders)
     print("Order data saved.")
