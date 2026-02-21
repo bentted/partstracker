@@ -2,14 +2,28 @@
 scrap_reasons = ["foreign material", "smear", "chip", "burn", "light", "heavy", "crack", "no fill"]
 part_numbers = ["780208", "780508", "780108", "780308", "780608"]
 
+
+class Part:
+    expected_rate = 248
+
+    def __init__(self, part_number):
+        self.part_number = part_number
+
+    def rate_percentage(self, made_parts):
+        if self.expected_rate <= 0:
+            return 0.0
+        return (made_parts / self.expected_rate) * 100
+
+
 def part_selection():
-    part_number = input("Enter part number: ")
-    mix = input("Enter mix number: ")
-    if part_number not in part_numbers:
+    while True:
+        part_number = input("Enter part number: ")
+        if part_number in part_numbers:
+            break
         print("Invalid part number. Please enter a valid part number from the list: " + ", ".join(part_numbers))
-        return part_selection()
-    else:
-        part_number = part_number + mix
+
+    mix = input("Enter mix number: ")
+    part_number = part_number + mix
     while True:
         try:
             numparts = int(input("Enter number of parts: "))
@@ -19,7 +33,7 @@ def part_selection():
         except ValueError:
             print("Please enter a valid non-negative integer for number of parts.")
     print("Part number: " + part_number + ", Number of parts: " + str(numparts))
-    return numparts
+    return part_number, numparts
 
 
 def scrap_reason(numparts):
@@ -43,5 +57,8 @@ def scrap_reason(numparts):
     return totalparts
 
 
-selected_parts = part_selection()
-scrap_reason(selected_parts)
+selected_part_number, selected_parts = part_selection()
+good_parts = scrap_reason(selected_parts)
+part = Part(selected_part_number)
+rate_percentage = part.rate_percentage(good_parts)
+print("Rate made: " + f"{rate_percentage:.1f}" + "% of expected " + str(part.expected_rate))
