@@ -1,3 +1,5 @@
+import random
+import json
 
 scrap_reasons = ["foreign material", "smear", "chip", "burn", "light", "heavy", "crack", "no fill"]
 part_numbers = ["780208", "780508", "780108", "780308", "780608"]
@@ -17,22 +19,51 @@ class Part:
 
 class Order:
     _next_order_number = 1
+    orders_data_file = "orders_data.json"
 
-    def __init__(self, part_number, parts_per_order):
+    def __init__(self, part_number):
         self.order_number = Order._next_order_number
         Order._next_order_number += 1
         self.part_number = part_number
-        self.parts_per_order = parts_per_order
+        self.parts_per_order = random.randint(100, 5000)
+        self.parts_made = 0
+        self.scrap_made = 0
+
+    def update_order(self, good_parts, scrap_parts):
+        self.parts_made += good_parts
+        self.scrap_made += scrap_parts
+
+    def parts_remaining(self):
+        return self.parts_per_order - self.parts_made - self.scrap_made
 
     def summary(self):
         return (
-            "Order "
-            + str(self.order_number)
-            + ": Part "
-            + self.part_number
-            + ", Parts per order: "
-            + str(self.parts_per_order)
+            f"Order {self.order_number}: Part {self.part_number}, Parts per order: {self.parts_per_order}, "
+            f"Parts made: {self.parts_made}, Scrap made: {self.scrap_made}, Parts remaining: {self.parts_remaining()}"
         )
+
+    @staticmethod
+    def save_orders(orders):
+        with open(Order.orders_data_file, "w") as file:
+            json.dump([order.__dict__ for order in orders], file)
+
+    @staticmethod
+    def load_orders():
+        try:
+            with open(Order.orders_data_file, "r") as file:
+                orders_data = json.load(file)
+                orders = []
+                for data in orders_data:
+                    order = Order(data["part_number"])
+                    order.order_number = data["order_number"]
+                    order.parts_per_order = data["parts_per_order"]
+                    order.parts_made = data["parts_made"]
+                    order.scrap_made = data["scrap_made"]
+                    orders.append(order)
+                Order._next_order_number = max(order.order_number for order in orders) + 1
+                return orders
+        except FileNotFoundError:
+            return []
 
 
 def part_selection():
@@ -77,10 +108,23 @@ def scrap_reason(numparts):
     return totalparts
 
 
-selected_part_number, selected_parts = part_selection()
-order = Order(selected_part_number, selected_parts)
-print(order.summary())
-good_parts = scrap_reason(selected_parts)
-part = Part(selected_part_number)
-rate_percentage = part.rate_percentage(good_parts)
-print("Rate made: " + f"{rate_percentage:.1f}" + "% of expected " + str(part.expected_rate))
+def main():
+    orders = Order.load_orders()
+
+    selected_part_number, _ = part_selection()
+    order = Order(selected_part_number)
+    orders.append(order)
+    print(order.summary())
+
+    while order.parts_remaining() > 0:
+        good_parts = scrap_reason(order.parts_remaining())
+        scrap_parts = order.parts_per_order - order.parts_remaining() - good_parts
+        order.update_order(good_parts, scrap_parts)
+        print(order.summary())
+
+    Order.save_orders(orders)
+    print("Order data saved.")
+
+
+if __name__ == "__main__":
+    main()
