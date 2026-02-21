@@ -15,6 +15,26 @@ class Part:
         return (made_parts / self.expected_rate) * 100
 
 
+class Order:
+    _next_order_number = 1
+
+    def __init__(self, part_number, parts_per_order):
+        self.order_number = Order._next_order_number
+        Order._next_order_number += 1
+        self.part_number = part_number
+        self.parts_per_order = parts_per_order
+
+    def summary(self):
+        return (
+            "Order "
+            + str(self.order_number)
+            + ": Part "
+            + self.part_number
+            + ", Parts per order: "
+            + str(self.parts_per_order)
+        )
+
+
 def part_selection():
     while True:
         part_number = input("Enter part number: ")
@@ -58,6 +78,8 @@ def scrap_reason(numparts):
 
 
 selected_part_number, selected_parts = part_selection()
+order = Order(selected_part_number, selected_parts)
+print(order.summary())
 good_parts = scrap_reason(selected_parts)
 part = Part(selected_part_number)
 rate_percentage = part.rate_percentage(good_parts)
