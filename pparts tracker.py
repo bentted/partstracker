@@ -1,10 +1,13 @@
 import random
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 import sys
 import os
+import hashlib
+import re
+import time
 
 # Fix console encoding issues on Windows
 if sys.platform.startswith('win'):
@@ -20,15 +23,126 @@ if sys.platform.startswith('win'):
 scrap_reasons = ["foreign material", "smear", "chip", "burn", "light", "heavy", "crack", "no fill"]
 part_numbers = ["780208", "780508", "780108", "780308", "780608"]
 
-# Admin credentials (in production, store securely with hashing)
+# Security configuration
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_DURATION_MINUTES = 15
+MIN_LOGIN_DELAY_SECONDS = 1
+
+# Input validation limits
+MAX_USERNAME_LENGTH = 50
+MAX_PASSWORD_LENGTH = 128
+MAX_OPERATOR_NAME_LENGTH = 100
+MAX_MIX_LENGTH = 10
+
+# Admin credentials (hashed with SHA-256)
 ADMIN_CREDENTIALS = {
-    "admin": "admin123",
-    "supervisor": "super456"
+    hashlib.sha256("FeuerWasser".encode()).hexdigest(): hashlib.sha256("Jennifer124!".encode()).hexdigest(),
+    hashlib.sha256("supervisor".encode()).hexdigest(): hashlib.sha256("super456".encode()).hexdigest()
 }
 
 
+def sanitize_input(input_string, max_length=None):
+    """Sanitize user input to prevent injection attacks"""
+    if input_string is None:
+        return ""
+    
+    # Convert to string and strip whitespace
+    sanitized = str(input_string).strip()
+    
+    # Apply length limit if specified
+    if max_length and len(sanitized) > max_length:
+        sanitized = sanitized[:max_length]
+    
+    # Remove or escape potentially dangerous characters
+    # Allow only alphanumeric, spaces, and safe special characters
+    sanitized = re.sub(r'[^\w\s\-\.\@\!\?]', '', sanitized)
+    
+    return sanitized
+
+
+def validate_operator_number(op_number):
+    """Validate operator number input"""
+    try:
+        num = int(op_number)
+        return 0 <= num <= 9999
+    except (ValueError, TypeError):
+        return False
+
+
+def validate_parts_count(parts_count):
+    """Validate parts count input"""
+    try:
+        count = int(parts_count)
+        return 0 <= count <= 999999  # Reasonable upper limit
+    except (ValueError, TypeError):
+        return False
+
+
 def authenticate_admin(username, password):
-    return ADMIN_CREDENTIALS.get(username) == password
+    """Secure admin authentication with brute force protection"""
+    
+    # Input validation and sanitization
+    if not username or not password:
+        return False
+    
+    username = sanitize_input(username, MAX_USERNAME_LENGTH)
+    password = sanitize_input(password, MAX_PASSWORD_LENGTH)
+    
+    if not username or not password:
+        return False
+    
+    # Check for account lockout
+    if is_account_locked(username):
+        return False
+    
+    # Add minimum delay to prevent rapid brute force attempts
+    time.sleep(MIN_LOGIN_DELAY_SECONDS)
+    
+    # Hash credentials and check
+    hashed_username = hashlib.sha256(username.encode()).hexdigest()
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    
+    is_valid = ADMIN_CREDENTIALS.get(hashed_username) == hashed_password
+    
+    # Log the attempt
+    log_login_attempt(username, is_valid, 'admin')
+    
+    return is_valid
+
+
+def is_account_locked(username):
+    """Check if account is currently locked due to failed attempts"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    # Get recent failed attempts
+    lockout_time = datetime.now() - timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+    
+    cursor.execute('''
+        SELECT COUNT(*) FROM login_attempts 
+        WHERE username = ? AND success = 0 AND attempt_time > ?
+    ''', (username, lockout_time.strftime('%Y-%m-%d %H:%M:%S')))
+    
+    failed_attempts = cursor.fetchone()[0]
+    conn.close()
+    
+    return failed_attempts >= MAX_LOGIN_ATTEMPTS
+
+
+def log_login_attempt(username, success, user_type):
+    """Log login attempt for security monitoring"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    cursor.execute('''
+        INSERT INTO login_attempts (username, success, user_type, attempt_time)
+        VALUES (?, ?, ?, ?)
+    ''', (username, 1 if success else 0, user_type, timestamp))
+    
+    conn.commit()
+    conn.close()
 
 
 def init_database():
@@ -47,13 +161,66 @@ def init_database():
         )
     ''')
     
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS operators (
+            operator_number INTEGER PRIMARY KEY,
+            operator_name TEXT NOT NULL,
+            created_date TEXT NOT NULL
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            order_number INTEGER PRIMARY KEY,
+            part_number TEXT NOT NULL,
+            parts_per_order INTEGER NOT NULL,
+            created_date TEXT NOT NULL,
+            status TEXT DEFAULT 'Active'
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            success INTEGER NOT NULL,
+            user_type TEXT NOT NULL,
+            attempt_time TEXT NOT NULL
+        )
+    ''')
+    
+    # Create index for performance on login attempts
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_login_attempts_username_time 
+        ON login_attempts(username, attempt_time)
+    ''')
+    
     conn.commit()
     conn.close()
 
 
 def save_scrap_entry(operator_number, part_number, order_number, scrap_reason, scrap_count):
+    """Save scrap entry with input validation"""
     conn = sqlite3.connect('parts_tracker.db')
     cursor = conn.cursor()
+    
+    # Validate inputs
+    if not validate_operator_number(operator_number):
+        conn.close()
+        raise ValueError("Invalid operator number")
+    
+    if not validate_parts_count(scrap_count):
+        conn.close()
+        raise ValueError("Invalid scrap count")
+    
+    # Sanitize text inputs
+    part_number = sanitize_input(part_number, 50)
+    scrap_reason = sanitize_input(scrap_reason, 50)
+    
+    # Validate scrap reason is in allowed list
+    if scrap_reason not in scrap_reasons:
+        conn.close()
+        raise ValueError("Invalid scrap reason")
     
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
@@ -65,7 +232,97 @@ def save_scrap_entry(operator_number, part_number, order_number, scrap_reason, s
     
     conn.commit()
     conn.close()
-    print(f"Scrap entry saved: {scrap_count} parts for reason '{scrap_reason}'")
+    print(f"Scrap entry saved: {scrap_count} parts for reason '{scrap_reason}'")  
+
+
+def add_operator(operator_number, operator_name):
+    """Add operator with input validation"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    # Validate inputs
+    if not validate_operator_number(operator_number):
+        conn.close()
+        return False
+    
+    # Sanitize operator name
+    operator_name = sanitize_input(operator_name, MAX_OPERATOR_NAME_LENGTH)
+    if not operator_name or len(operator_name.strip()) == 0:
+        conn.close()
+        return False
+    
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    try:
+        cursor.execute('''
+            INSERT INTO operators (operator_number, operator_name, created_date)
+            VALUES (?, ?, ?)
+        ''', (operator_number, operator_name, timestamp))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
+
+
+def remove_operator(operator_number):
+    """Remove operator with validation"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    # Validate input
+    if not validate_operator_number(operator_number):
+        conn.close()
+        return False
+    
+    cursor.execute('DELETE FROM operators WHERE operator_number = ?', (operator_number,))
+    rows_affected = cursor.rowcount
+    
+    conn.commit()
+    conn.close()
+    return rows_affected > 0
+
+
+def get_all_operators():
+    """Get all operators safely"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT operator_number, operator_name, created_date FROM operators ORDER BY operator_number')
+    operators = cursor.fetchall()
+    
+    conn.close()
+    return operators
+
+
+def save_order(part_number, parts_per_order):
+    """Save order with input validation"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    # Validate inputs
+    if not validate_parts_count(parts_per_order):
+        conn.close()
+        raise ValueError("Invalid parts per order count")
+    
+    # Sanitize part number
+    part_number = sanitize_input(part_number, 50)
+    if not part_number:
+        conn.close()
+        raise ValueError("Invalid part number")
+    
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    cursor.execute('''
+        INSERT INTO orders (part_number, parts_per_order, created_date)
+        VALUES (?, ?, ?)
+    ''', (part_number, parts_per_order, timestamp))
+    
+    order_number = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return order_number
 
 
 class Part:
@@ -311,12 +568,19 @@ class LoginWindow:
     
     def login(self):
         print("Processing login...")
+        
         if self.login_type.get() == "admin":
-            username = self.username_var.get()
-            password = self.password_var.get()
+            username = sanitize_input(self.username_var.get(), MAX_USERNAME_LENGTH)
+            password = self.password_var.get()  # Don't sanitize password (may contain special chars)
             
             if not username or not password:
                 self.status_var.set("Please enter username and password")
+                return
+            
+            # Check for account lockout before attempting authentication
+            if is_account_locked(username):
+                self.status_var.set(f"Account locked. Try again in {LOCKOUT_DURATION_MINUTES} minutes.")
+                print(f"Admin login blocked: Account {username} is locked")
                 return
             
             if authenticate_admin(username, password):
@@ -326,22 +590,53 @@ class LoginWindow:
                 self.login_window.destroy()
                 self.callback(self.is_admin, self.username)
             else:
-                self.status_var.set("Invalid credentials")
+                # Check if account is now locked after this failed attempt
+                if is_account_locked(username):
+                    self.status_var.set(f"Too many failed attempts. Account locked for {LOCKOUT_DURATION_MINUTES} minutes.")
+                else:
+                    remaining_attempts = MAX_LOGIN_ATTEMPTS - self.get_recent_failed_attempts(username)
+                    self.status_var.set(f"Invalid credentials. {remaining_attempts} attempts remaining.")
                 print("Admin login failed: Invalid credentials")
         else:
             # Operator login
-            try:
-                operator_num = int(self.operator_var.get())
-                if operator_num < 0 or operator_num > 9999:
-                    raise ValueError
-                print(f"Operator login successful: {operator_num}")
-                self.is_admin = False
-                self.username = f"Operator {operator_num}"
-                self.login_window.destroy()
-                self.callback(self.is_admin, self.username, operator_num)
-            except ValueError:
+            operator_input = sanitize_input(self.operator_var.get(), 10)
+            
+            if not operator_input:
+                self.status_var.set("Please enter operator number")
+                return
+            
+            if not validate_operator_number(operator_input):
                 self.status_var.set("Please enter a valid 4-digit operator number (0-9999)")
-                print("Operator login failed: Invalid operator number")
+                print("Operator login failed: Invalid operator number format")
+                return
+            
+            operator_num = int(operator_input)
+            
+            # Log operator login attempt
+            log_login_attempt(f"operator_{operator_num}", True, 'operator')
+            
+            print(f"Operator login successful: {operator_num}")
+            self.is_admin = False
+            self.username = f"Operator {operator_num}"
+            self.login_window.destroy()
+            self.callback(self.is_admin, self.username, operator_num)
+    
+    def get_recent_failed_attempts(self, username):
+        """Get count of recent failed attempts for display purposes"""
+        conn = sqlite3.connect('parts_tracker.db')
+        cursor = conn.cursor()
+        
+        lockout_time = datetime.now() - timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+        
+        cursor.execute('''
+            SELECT COUNT(*) FROM login_attempts 
+            WHERE username = ? AND success = 0 AND attempt_time > ?
+        ''', (username, lockout_time.strftime('%Y-%m-%d %H:%M:%S')))
+        
+        failed_attempts = cursor.fetchone()[0]
+        conn.close()
+        
+        return failed_attempts
     
     def on_login_close(self):
         """Handle login window close event"""
@@ -491,9 +786,17 @@ class PartsTrackerGUI:
     def create_admin_widgets(self, main_frame):
         # Admin-specific widgets
         
-        # Part Selection Section (Admin Only)
-        part_frame = ttk.LabelFrame(main_frame, text="Order Creation (Admin Only)", padding="10")
-        part_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        # Create notebook for tabbed interface
+        notebook = ttk.Notebook(main_frame)
+        notebook.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        
+        # Orders Tab
+        orders_tab = ttk.Frame(notebook)
+        notebook.add(orders_tab, text="Orders")
+        
+        # Part Selection Section
+        part_frame = ttk.LabelFrame(orders_tab, text="Create New Order", padding="10")
+        part_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
         ttk.Label(part_frame, text="Part Number:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
         self.part_var = tk.StringVar()
@@ -505,12 +808,17 @@ class PartsTrackerGUI:
         self.mix_entry = ttk.Entry(part_frame, textvariable=self.mix_var, width=10)
         self.mix_entry.grid(row=0, column=3, padx=(0, 20))
         
+        ttk.Label(part_frame, text="Parts per Order:").grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(10, 0))
+        self.parts_per_order_var = tk.StringVar()
+        self.parts_per_order_entry = ttk.Entry(part_frame, textvariable=self.parts_per_order_var, width=10)
+        self.parts_per_order_entry.grid(row=1, column=1, padx=(0, 20), pady=(10, 0))
+        
         self.create_order_btn = ttk.Button(part_frame, text="Create New Order", command=self.create_order)
-        self.create_order_btn.grid(row=0, column=4)
+        self.create_order_btn.grid(row=1, column=2, columnspan=2, pady=(10, 0))
         
         # Current Orders Section
-        orders_frame = ttk.LabelFrame(main_frame, text="Current Orders", padding="10")
-        orders_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        orders_frame = ttk.LabelFrame(orders_tab, text="Current Orders", padding="10")
+        orders_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         
         self.orders_text = scrolledtext.ScrolledText(orders_frame, height=15, width=80)
         self.orders_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -518,13 +826,68 @@ class PartsTrackerGUI:
         refresh_btn = ttk.Button(orders_frame, text="Refresh Orders", command=self.refresh_orders)
         refresh_btn.grid(row=1, column=0, pady=(10, 0))
         
+        # Operators Tab
+        operators_tab = ttk.Frame(notebook)
+        notebook.add(operators_tab, text="Operators")
+        
+        # Add Operator Section
+        add_op_frame = ttk.LabelFrame(operators_tab, text="Add New Operator", padding="10")
+        add_op_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        ttk.Label(add_op_frame, text="Operator Number:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+        self.new_op_number_var = tk.StringVar()
+        self.new_op_number_entry = ttk.Entry(add_op_frame, textvariable=self.new_op_number_var, width=10)
+        self.new_op_number_entry.grid(row=0, column=1, padx=(0, 20))
+        
+        ttk.Label(add_op_frame, text="Operator Name:").grid(row=0, column=2, sticky=tk.W, padx=(0, 5))
+        self.new_op_name_var = tk.StringVar()
+        self.new_op_name_entry = ttk.Entry(add_op_frame, textvariable=self.new_op_name_var, width=20)
+        self.new_op_name_entry.grid(row=0, column=3, padx=(0, 20))
+        
+        self.add_op_btn = ttk.Button(add_op_frame, text="Add Operator", command=self.add_operator)
+        self.add_op_btn.grid(row=0, column=4)
+        
+        # Operator List Section
+        op_list_frame = ttk.LabelFrame(operators_tab, text="Current Operators", padding="10")
+        op_list_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        
+        # Create treeview for operators
+        columns = ('Number', 'Name', 'Created Date')
+        self.operators_tree = ttk.Treeview(op_list_frame, columns=columns, show='headings', height=10)
+        
+        for col in columns:
+            self.operators_tree.heading(col, text=col)
+            self.operators_tree.column(col, width=150)
+        
+        self.operators_tree.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Scrollbar for treeview
+        tree_scrollbar = ttk.Scrollbar(op_list_frame, orient=tk.VERTICAL, command=self.operators_tree.yview)
+        tree_scrollbar.grid(row=0, column=2, sticky=(tk.N, tk.S))
+        self.operators_tree.configure(yscrollcommand=tree_scrollbar.set)
+        
+        # Remove operator button
+        self.remove_op_btn = ttk.Button(op_list_frame, text="Remove Selected Operator", command=self.remove_operator)
+        self.remove_op_btn.grid(row=1, column=0, pady=(10, 0))
+        
+        # Refresh operators button
+        self.refresh_op_btn = ttk.Button(op_list_frame, text="Refresh Operators", command=self.refresh_operators)
+        self.refresh_op_btn.grid(row=1, column=1, pady=(10, 0))
+        
         # Configure grid weights
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(2, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+        orders_tab.columnconfigure(0, weight=1)
+        orders_tab.rowconfigure(1, weight=1)
         orders_frame.columnconfigure(0, weight=1)
         orders_frame.rowconfigure(0, weight=1)
+        operators_tab.columnconfigure(0, weight=1)
+        operators_tab.rowconfigure(1, weight=1)
+        op_list_frame.columnconfigure(0, weight=1)
+        op_list_frame.rowconfigure(0, weight=1)
         
         self.refresh_orders()
+        self.refresh_operators()
     
     def create_operator_widgets(self, main_frame):
         # Operator-specific widgets (scrap tracking only)
@@ -641,16 +1004,91 @@ class PartsTrackerGUI:
         if not hasattr(self, 'orders_text'):
             return
         
-        # This would connect to database to get all orders
-        # For now, showing placeholder text
+        # Get orders from database
+        conn = sqlite3.connect('parts_tracker.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT order_number, part_number, parts_per_order, created_date, status FROM orders ORDER BY order_number DESC')
+        orders = cursor.fetchall()
+        conn.close()
+        
+        # Display orders
         orders_info = "=== ALL ORDERS ===\n\n"
-        orders_info += "Order #1: Part 780208A1, Quantity: 1500, Status: In Progress\n"
-        orders_info += "Order #2: Part 780508B2, Quantity: 2200, Status: Completed\n"
-        orders_info += "Order #3: Part 780108C3, Quantity: 890, Status: In Progress\n\n"
-        orders_info += "Note: This would display real order data from database in production."
+        
+        if orders:
+            for order_num, part_num, parts_per_order, created_date, status in orders:
+                orders_info += f"Order #{order_num}: Part {part_num}, Quantity: {parts_per_order}, Status: {status}\n"
+                orders_info += f"  Created: {created_date}\n\n"
+        else:
+            orders_info += "No orders found in database.\n"
         
         self.orders_text.delete(1.0, tk.END)
         self.orders_text.insert(1.0, orders_info)
+    
+    def add_operator(self):
+        # Validate inputs with enhanced security
+        op_number_input = sanitize_input(self.new_op_number_var.get(), 10)
+        op_name_input = sanitize_input(self.new_op_name_var.get(), MAX_OPERATOR_NAME_LENGTH)
+        
+        if not op_number_input or not op_name_input:
+            messagebox.showerror("Error", "Please fill in both Operator Number and Name")
+            return
+        
+        if not validate_operator_number(op_number_input):
+            messagebox.showerror("Error", "Operator Number must be between 0 and 9999")
+            return
+        
+        op_number = int(op_number_input)
+        op_name = op_name_input.strip()
+        
+        if not op_name:
+            messagebox.showerror("Error", "Operator Name cannot be empty")
+            return
+        
+        try:
+            if add_operator(op_number, op_name):
+                messagebox.showinfo("Success", f"Operator {op_number} ({op_name}) added successfully!")
+                self.new_op_number_var.set("")
+                self.new_op_name_var.set("")
+                self.refresh_operators()
+            else:
+                messagebox.showerror("Error", f"Operator number {op_number} already exists!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to add operator: {str(e)}")
+    
+    def remove_operator(self):
+        selection = self.operators_tree.selection()
+        if not selection:
+            messagebox.showerror("Error", "Please select an operator to remove")
+            return
+        
+        item = self.operators_tree.item(selection[0])
+        op_number = int(item['values'][0])
+        op_name = item['values'][1]
+        
+        result = messagebox.askyesno("Confirm", f"Are you sure you want to remove Operator {op_number} ({op_name})?")
+        
+        if result:
+            if remove_operator(op_number):
+                messagebox.showinfo("Success", f"Operator {op_number} removed successfully!")
+                self.refresh_operators()
+            else:
+                messagebox.showerror("Error", f"Failed to remove operator {op_number}")
+    
+    def refresh_operators(self):
+        if not hasattr(self, 'operators_tree'):
+            return
+        
+        # Clear existing items
+        for item in self.operators_tree.get_children():
+            self.operators_tree.delete(item)
+        
+        # Get operators from database
+        operators = get_all_operators()
+        
+        # Insert operators into treeview
+        for op_number, op_name, created_date in operators:
+            self.operators_tree.insert('', tk.END, values=(op_number, op_name, created_date))
     
     def select_order_for_scrap(self):
         try:
@@ -692,33 +1130,60 @@ class PartsTrackerGUI:
             messagebox.showerror("Access Denied", "Only administrators can create orders")
             return
             
-        # Validate inputs
-        if not self.part_var.get():
+        # Validate and sanitize inputs
+        part_number = self.part_var.get()
+        mix_number = sanitize_input(self.mix_var.get(), MAX_MIX_LENGTH)
+        parts_input = sanitize_input(self.parts_per_order_var.get(), 10)
+        
+        if not part_number:
             messagebox.showerror("Error", "Please select a part number")
             return
         
-        if not self.mix_var.get():
+        if not mix_number:
             messagebox.showerror("Error", "Please enter a mix number")
             return
         
+        if not parts_input:
+            messagebox.showerror("Error", "Please enter parts per order")
+            return
+        
+        if not validate_parts_count(parts_input):
+            messagebox.showerror("Error", "Parts per order must be a positive integer (max 999999)")
+            return
+        
+        parts_per_order = int(parts_input)
+        
+        # Validate part number is in allowed list
+        if part_number not in part_numbers:
+            messagebox.showerror("Error", "Invalid part number selected")
+            return
+        
         # Create order
-        part_number = self.part_var.get() + self.mix_var.get()
-        order_quantity = random.randint(110, 5000)
+        full_part_number = part_number + mix_number
         
-        self.order = Order(part_number, order_quantity)
-        
-        # Show success message
-        messagebox.showinfo("Order Created", 
-                           f"Order {self.order.order_number} created successfully!\n"
-                           f"Part: {part_number}\n"
-                           f"Quantity: {order_quantity}")
-        
-        # Clear inputs
-        self.part_var.set("")
-        self.mix_var.set("")
-        
-        # Refresh orders display
-        self.refresh_orders()
+        try:
+            # Save order to database and get order number
+            order_number = save_order(full_part_number, parts_per_order)
+            
+            self.order = Order(full_part_number, parts_per_order)
+            self.order.order_number = order_number
+            
+            # Show success message
+            messagebox.showinfo("Order Created", 
+                               f"Order {order_number} created successfully!\n"
+                               f"Part: {full_part_number}\n"
+                               f"Quantity: {parts_per_order}")
+            
+            # Clear inputs
+            self.part_var.set("")
+            self.mix_var.set("")
+            self.parts_per_order_var.set("")
+            
+            # Refresh orders display
+            self.refresh_orders()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create order: {str(e)}")
     
     def add_scrap_entry(self):
         # Get operator number
@@ -779,49 +1244,65 @@ class PartsTrackerGUI:
             messagebox.showerror("Error", "Please create an order first")
             return
         
+        if not hasattr(self, 'parts_made') or self.parts_made <= 0:
+            messagebox.showerror("Error", "Invalid parts made count")
+            return
+        
         # Calculate totals
         total_scrap = sum(entry[1] for entry in self.scrap_entries)
         good_parts = self.parts_made - total_scrap
         remaining_parts = self.order.parts_per_order - good_parts
         
-        # Save to database
-        for reason, count, operator_num in self.scrap_entries:
-            save_scrap_entry(operator_num, self.order.part_number, self.order.order_number, reason, count)
+        # Validate calculations
+        if total_scrap > self.parts_made:
+            messagebox.showerror("Error", "Total scrap cannot exceed parts made")
+            return
         
-        # Calculate rate percentage
-        part = Part(self.order.part_number)
-        rate_percentage = part.rate_percentage(good_parts)
-        
-        # Display results
-        results = []
-        results.append("=== PRODUCTION SUMMARY ===")
-        results.append(f"Order: {self.order.order_number}")
-        results.append(f"Part: {self.order.part_number}")
-        results.append(f"Order Quantity: {self.order.parts_per_order}")
-        results.append(f"Parts Made: {self.parts_made}")
-        results.append("")
-        results.append("=== SCRAP BREAKDOWN ===")
-        
-        if self.scrap_entries:
-            for reason, count, _ in self.scrap_entries:
-                results.append(f"  {reason}: {count} parts")
-        else:
-            results.append("  No scrap recorded")
-        
-        results.append(f"Total Scrap: {total_scrap}")
-        results.append(f"Good Parts: {good_parts}")
-        results.append(f"Remaining Parts: {remaining_parts}")
-        results.append("")
-        results.append("=== PERFORMANCE ===")
-        results.append(f"Rate Made: {rate_percentage:.1f}% of expected {part.expected_rate}")
-        results.append("")
-        results.append("Data saved to database successfully!")
-        
-        self.results_text.delete(1.0, tk.END)
-        self.results_text.insert(1.0, "\n".join(results))
-        
-        # Disable scrap tracking until new order
-        self.toggle_scrap_tracking(False)
+        try:
+            # Save to database
+            for reason, count, operator_num in self.scrap_entries:
+                save_scrap_entry(operator_num, self.order.part_number, self.order.order_number, reason, count)
+            
+            # Calculate rate percentage
+            part = Part(self.order.part_number)
+            rate_percentage = part.rate_percentage(good_parts)
+            
+            # Display results
+            results = []
+            results.append("=== PRODUCTION SUMMARY ===")
+            results.append(f"Order: {self.order.order_number}")
+            results.append(f"Part: {self.order.part_number}")
+            results.append(f"Order Quantity: {self.order.parts_per_order}")
+            results.append(f"Parts Made: {self.parts_made}")
+            results.append("")
+            results.append("=== SCRAP BREAKDOWN ===")
+            
+            if self.scrap_entries:
+                for reason, count, _ in self.scrap_entries:
+                    results.append(f"  {reason}: {count} parts")
+            else:
+                results.append("  No scrap recorded")
+            
+            results.append(f"Total Scrap: {total_scrap}")
+            results.append(f"Good Parts: {good_parts}")
+            results.append(f"Remaining Parts: {remaining_parts}")
+            results.append("")
+            results.append("=== PERFORMANCE ===")
+            results.append(f"Rate Made: {rate_percentage:.1f}% of expected {part.expected_rate}")
+            results.append("")
+            results.append("Data saved to database successfully!")
+            
+            if hasattr(self, 'results_text'):
+                self.results_text.delete(1.0, tk.END)
+                self.results_text.insert(1.0, "\n".join(results))
+            
+            # Disable scrap tracking until new order
+            self.toggle_scrap_tracking(False)
+            
+            messagebox.showinfo("Success", "Production tracking completed and saved successfully!")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save tracking data: {str(e)}")
 
 
 def main():
@@ -877,7 +1358,7 @@ def run_command_line_mode():
     """Fallback command-line interface when GUI is not available"""
     print("\n=== PARTS TRACKER - COMMAND LINE MODE ===")
     print("Available admin credentials:")
-    print("  Username: admin, Password: admin123")
+    print("  Username: FeuerWasser, Password: Jennifer124!")
     print("  Username: supervisor, Password: super456")
     
     # Initialize database
