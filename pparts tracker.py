@@ -176,22 +176,36 @@ class LoginWindow:
         self.create_login_window()
     
     def create_login_window(self):
-        # Create login window
-        self.login_window = tk.Toplevel(self.root)
-        self.login_window.title("Parts Tracker - Login")
-        self.login_window.geometry("400x300")
-        self.login_window.transient(self.root)
-        self.login_window.grab_set()
-        
-        # Make sure the window appears on top and is visible
-        self.login_window.lift()
-        self.login_window.focus_force()
-        
-        # Center the window
-        self.login_window.update_idletasks()  # Ensure geometry is calculated
-        x = (self.login_window.winfo_screenwidth() // 2) - (400 // 2)
-        y = (self.login_window.winfo_screenheight() // 2) - (300 // 2)
-        self.login_window.geometry(f"400x300+{x}+{y}")
+        try:
+            # Create login window
+            self.login_window = tk.Toplevel(self.root)
+            self.login_window.title("Parts Tracker - Login")
+            self.login_window.geometry("400x350")
+            self.login_window.resizable(False, False)
+            
+            # Make it modal
+            self.login_window.transient(self.root)
+            self.login_window.grab_set()
+            
+            # Handle window close event
+            self.login_window.protocol("WM_DELETE_WINDOW", self.on_login_close)
+            
+            # Center the login window
+            self.login_window.update_idletasks()
+            x = (self.login_window.winfo_screenwidth() // 2) - (400 // 2)
+            y = (self.login_window.winfo_screenheight() // 2) - (350 // 2)
+            self.login_window.geometry(f"400x350+{x}+{y}")
+            
+            # Bring window to front
+            self.login_window.lift()
+            self.login_window.focus_force()
+            
+        except Exception as e:
+            print(f"Error creating login window: {e}")
+            # Fall back to command line if login window fails
+            self.root.destroy()
+            run_command_line_mode()
+            return
         
         main_frame = ttk.Frame(self.login_window, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -292,6 +306,12 @@ class LoginWindow:
                 self.callback(self.is_admin, self.username, operator_num)
             except ValueError:
                 self.status_var.set("Please enter a valid 4-digit operator number (0-9999)")
+    
+    def on_login_close(self):
+        """Handle login window close event"""
+        print("Login cancelled by user")
+        self.root.quit()
+        self.root.destroy()
 
 
 class PartsTrackerGUI:
@@ -300,9 +320,11 @@ class PartsTrackerGUI:
         self.root = root
         self.root.title("Parts Tracker")
         self.root.geometry("800x600")
-        self.root.withdraw()  # Hide main window until login
-        print("Main window hidden, initializing database...")
         
+        # Center the window on screen
+        self.center_window()
+        
+        print("Initializing database...")
         # Initialize database
         init_database()
         print("Database initialized successfully")
@@ -314,9 +336,21 @@ class PartsTrackerGUI:
         self.current_user = ""
         self.operator_number = None
         
+        # Hide main window until login completes
+        self.root.withdraw()
+        
         print("Starting login process...")
         # Start with login
         self.show_login()
+    
+    def center_window(self):
+        """Center the main window on the screen"""
+        self.root.update_idletasks()
+        width = 800
+        height = 600
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
     
     def show_login(self):
         LoginWindow(self.root, self.on_login_complete)
@@ -326,33 +360,59 @@ class PartsTrackerGUI:
         self.current_user = username
         self.operator_number = operator_num
         
-        self.root.deiconify()  # Show main window
-        self.create_widgets()
-        
-        # Update title with user info
-        user_type = "Administrator" if is_admin else "Operator"
-        self.root.title(f"Parts Tracker - {user_type}: {username}")
+        try:
+            # Show main window
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            
+            # Create the main interface
+            self.create_widgets()
+            
+            # Update title with user info
+            user_type = "Administrator" if is_admin else "Operator"
+            self.root.title(f"Parts Tracker - {user_type}: {username}")
+            
+            print(f"Login successful: {user_type} {username}")
+            
+        except Exception as e:
+            print(f"Error showing main window: {e}")
+            messagebox.showerror("Error", f"Failed to initialize main window: {e}")
         
     def create_widgets(self):
-        # Main frame
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # User info frame
-        user_frame = ttk.Frame(main_frame)
-        user_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        user_type = "Administrator" if self.is_admin else "Operator"
-        ttk.Label(user_frame, text=f"Logged in as: {user_type} - {self.current_user}", 
-                 font=("", 10, "bold")).pack(side=tk.LEFT)
-        
-        logout_btn = ttk.Button(user_frame, text="Logout", command=self.logout)
-        logout_btn.pack(side=tk.RIGHT)
-        
-        if self.is_admin:
-            self.create_admin_widgets(main_frame)
-        else:
-            self.create_operator_widgets(main_frame)
+        try:
+            # Clear any existing widgets
+            for widget in self.root.winfo_children():
+                widget.destroy()
+            
+            # Configure root window
+            self.root.columnconfigure(0, weight=1)
+            self.root.rowconfigure(0, weight=1)
+            
+            # Main frame
+            main_frame = ttk.Frame(self.root, padding="10")
+            main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+            main_frame.columnconfigure(0, weight=1)
+            
+            # User info frame
+            user_frame = ttk.Frame(main_frame)
+            user_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
+            
+            user_type = "Administrator" if self.is_admin else "Operator"
+            ttk.Label(user_frame, text=f"Logged in as: {user_type} - {self.current_user}", 
+                     font=("", 10, "bold")).pack(side=tk.LEFT)
+            
+            logout_btn = ttk.Button(user_frame, text="Logout", command=self.logout)
+            logout_btn.pack(side=tk.RIGHT)
+            
+            if self.is_admin:
+                self.create_admin_widgets(main_frame)
+            else:
+                self.create_operator_widgets(main_frame)
+                
+        except Exception as e:
+            print(f"Error creating widgets: {e}")
+            messagebox.showerror("Error", f"Failed to create interface: {e}")
     
     def create_admin_widgets(self, main_frame):
         # Admin-specific widgets
@@ -680,40 +740,53 @@ class PartsTrackerGUI:
 
 def main():
     try:
-        # Test if we can create a GUI
-        test_root = tk.Tk()
-        test_root.withdraw()
-        test_root.destroy()
+        print("Starting Parts Tracker application...")
         
-        print("GUI environment detected, starting GUI application...")
+        # Initialize tkinter root window first
         root = tk.Tk()
-        app = PartsTrackerGUI(root)
-        root.mainloop()
+        root.withdraw()  # Hide initially
         
+        # Check if GUI is actually available by testing basic operations
+        try:
+            # Test basic tkinter operations
+            root.winfo_screenwidth()
+            root.winfo_screenheight()
+            
+            print("GUI environment available, initializing application...")
+            
+            # Show root window and start GUI app
+            root.deiconify()
+            app = PartsTrackerGUI(root)
+            root.mainloop()
+            
+        except tk.TclError as gui_error:
+            print(f"GUI display error: {gui_error}")
+            root.destroy()
+            raise Exception("GUI cannot be displayed")
+            
     except Exception as e:
-        print(f"GUI not available: {e}")
-        print("Running in command-line mode...")
+        print(f"Starting command-line mode. (Reason: {e})")
         run_command_line_mode()
 
 
 def run_command_line_mode():
     """Fallback command-line interface when GUI is not available"""
     print("\n=== PARTS TRACKER - COMMAND LINE MODE ===")
-    print("GUI is not available in this environment.")
     print("Available admin credentials:")
     print("  Username: admin, Password: admin123")
     print("  Username: supervisor, Password: super456")
     
     # Initialize database
     init_database()
+    print("Database initialized successfully.")
     
     # Simple login
     print("\nLogin:")
-    user_type = input("Enter 'admin' for administrator or 'operator' for operator: ").lower()
+    user_type = input("Enter 'admin' for administrator or 'operator' for operator: ").lower().strip()
     
     if user_type == "admin":
-        username = input("Username: ")
-        password = input("Password: ")
+        username = input("Username: ").strip()
+        password = input("Password: ").strip()
         
         if authenticate_admin(username, password):
             print(f"Welcome, Administrator {username}!")
@@ -723,7 +796,8 @@ def run_command_line_mode():
             return
     else:
         try:
-            operator_num = int(input("Enter operator number (0-9999): "))
+            operator_input = input("Enter operator number (0-9999): ").strip()
+            operator_num = int(operator_input)
             if 0 <= operator_num <= 9999:
                 print(f"Welcome, Operator {operator_num}!")
                 operator_command_line_interface(operator_num)
