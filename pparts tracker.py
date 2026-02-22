@@ -191,18 +191,31 @@ class LoginWindow:
             # Handle window close event
             self.login_window.protocol("WM_DELETE_WINDOW", self.on_login_close)
             
-            # Center the login window
+            # Force window to center and display
             self.login_window.update_idletasks()
-            x = (self.login_window.winfo_screenwidth() // 2) - (400 // 2)
-            y = (self.login_window.winfo_screenheight() // 2) - (350 // 2)
+            
+            # Get screen dimensions
+            screen_width = self.login_window.winfo_screenwidth()
+            screen_height = self.login_window.winfo_screenheight()
+            
+            # Calculate center position
+            x = (screen_width // 2) - (400 // 2)
+            y = (screen_height // 2) - (350 // 2)
+            
+            # Ensure window is not off-screen
+            x = max(0, min(x, screen_width - 400))
+            y = max(0, min(y, screen_height - 350))
+            
             self.login_window.geometry(f"400x350+{x}+{y}")
             
-            # Bring window to front and ensure it's visible
+            # Force window to be visible and on top
+            self.login_window.deiconify()
             self.login_window.lift()
             self.login_window.focus_force()
             self.login_window.attributes('-topmost', True)
+            self.login_window.update()
             
-            print("Login window created successfully")
+            print("Login window created and positioned successfully")
             
         except Exception as e:
             print(f"Error creating login window: {e}")
@@ -331,6 +344,10 @@ class PartsTrackerGUI:
         self.root.title("Parts Tracker")
         self.root.geometry("800x600")
         
+        # Ensure window is visible and on top
+        self.root.lift()
+        self.root.attributes('-topmost', True)
+        
         # Center the window on screen
         self.center_window()
         
@@ -375,8 +392,15 @@ class PartsTrackerGUI:
             # Show main window
             print("Showing main window...")
             self.root.deiconify()
+            self.root.update_idletasks()
+            
+            # Force main window to be visible and on top
             self.root.lift()
             self.root.focus_force()
+            self.root.attributes('-topmost', True)
+            
+            # Brief delay to ensure window is ready
+            self.root.after(100, lambda: self.root.attributes('-topmost', False))
             
             # Create the main interface
             print("Creating main interface...")
@@ -385,6 +409,9 @@ class PartsTrackerGUI:
             # Update title with user info
             user_type = "Administrator" if is_admin else "Operator"
             self.root.title(f"Parts Tracker - {user_type}: {username}")
+            
+            # Final visibility ensure
+            self.root.update()
             
             print(f"Application ready: {user_type} {username}")
             
@@ -760,18 +787,21 @@ def main():
         
         # Initialize tkinter root window first
         root = tk.Tk()
-        root.withdraw()  # Hide initially
         
         # Check if GUI is actually available by testing basic operations
         try:
             # Test basic tkinter operations
-            root.winfo_screenwidth()
-            root.winfo_screenheight()
+            screen_width = root.winfo_screenwidth()
+            screen_height = root.winfo_screenheight()
+            print(f"Screen resolution: {screen_width}x{screen_height}")
             
             print("GUI environment available, initializing application...")
             
             # Create GUI app (it will handle showing/hiding the window)
             app = PartsTrackerGUI(root)
+            
+            # Ensure root window gets focus and starts mainloop
+            root.focus_force()
             root.mainloop()
             
         except tk.TclError as gui_error:
