@@ -177,6 +177,7 @@ class LoginWindow:
     
     def create_login_window(self):
         try:
+            print("Creating login window...")
             # Create login window
             self.login_window = tk.Toplevel(self.root)
             self.login_window.title("Parts Tracker - Login")
@@ -196,13 +197,17 @@ class LoginWindow:
             y = (self.login_window.winfo_screenheight() // 2) - (350 // 2)
             self.login_window.geometry(f"400x350+{x}+{y}")
             
-            # Bring window to front
+            # Bring window to front and ensure it's visible
             self.login_window.lift()
             self.login_window.focus_force()
+            self.login_window.attributes('-topmost', True)
+            
+            print("Login window created successfully")
             
         except Exception as e:
             print(f"Error creating login window: {e}")
             # Fall back to command line if login window fails
+            messagebox.showerror("Error", f"Failed to create login window: {e}")
             self.root.destroy()
             run_command_line_mode()
             return
@@ -279,6 +284,7 @@ class LoginWindow:
             self.operator_frame.pack(fill=tk.X, pady=(0, 20))
     
     def login(self):
+        print("Processing login...")
         if self.login_type.get() == "admin":
             username = self.username_var.get()
             password = self.password_var.get()
@@ -288,24 +294,28 @@ class LoginWindow:
                 return
             
             if authenticate_admin(username, password):
+                print(f"Admin login successful: {username}")
                 self.is_admin = True
                 self.username = username
                 self.login_window.destroy()
                 self.callback(self.is_admin, self.username)
             else:
                 self.status_var.set("Invalid credentials")
+                print("Admin login failed: Invalid credentials")
         else:
             # Operator login
             try:
                 operator_num = int(self.operator_var.get())
                 if operator_num < 0 or operator_num > 9999:
                     raise ValueError
+                print(f"Operator login successful: {operator_num}")
                 self.is_admin = False
                 self.username = f"Operator {operator_num}"
                 self.login_window.destroy()
                 self.callback(self.is_admin, self.username, operator_num)
             except ValueError:
                 self.status_var.set("Please enter a valid 4-digit operator number (0-9999)")
+                print("Operator login failed: Invalid operator number")
     
     def on_login_close(self):
         """Handle login window close event"""
@@ -356,28 +366,34 @@ class PartsTrackerGUI:
         LoginWindow(self.root, self.on_login_complete)
     
     def on_login_complete(self, is_admin, username, operator_num=None):
+        print(f"Login completed. User: {username}, Admin: {is_admin}")
         self.is_admin = is_admin
         self.current_user = username
         self.operator_number = operator_num
         
         try:
             # Show main window
+            print("Showing main window...")
             self.root.deiconify()
             self.root.lift()
             self.root.focus_force()
             
             # Create the main interface
+            print("Creating main interface...")
             self.create_widgets()
             
             # Update title with user info
             user_type = "Administrator" if is_admin else "Operator"
             self.root.title(f"Parts Tracker - {user_type}: {username}")
             
-            print(f"Login successful: {user_type} {username}")
+            print(f"Application ready: {user_type} {username}")
             
         except Exception as e:
             print(f"Error showing main window: {e}")
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("Error", f"Failed to initialize main window: {e}")
+            self.root.quit()
         
     def create_widgets(self):
         try:
@@ -754,8 +770,7 @@ def main():
             
             print("GUI environment available, initializing application...")
             
-            # Show root window and start GUI app
-            root.deiconify()
+            # Create GUI app (it will handle showing/hiding the window)
             app = PartsTrackerGUI(root)
             root.mainloop()
             
