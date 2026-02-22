@@ -3,6 +3,19 @@ import sqlite3
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
+import sys
+import os
+
+# Fix console encoding issues on Windows
+if sys.platform.startswith('win'):
+    try:
+        # Try to set UTF-8 encoding for console output
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+    except:
+        # If that fails, just continue with default encoding
+        pass
 
 scrap_reasons = ["foreign material", "smear", "chip", "burn", "light", "heavy", "crack", "no fill"]
 part_numbers = ["780208", "780508", "780108", "780308", "780608"]
@@ -333,42 +346,60 @@ class LoginWindow:
     def on_login_close(self):
         """Handle login window close event"""
         print("Login cancelled by user")
-        self.root.quit()
-        self.root.destroy()
+        try:
+            messagebox.showinfo("Application Closing", "Login was cancelled. The application will now close.")
+        except:
+            pass
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+            import sys
+            sys.exit(1)
 
 
 class PartsTrackerGUI:
     def __init__(self, root):
-        print("Initializing PartsTrackerGUI...")
-        self.root = root
-        self.root.title("Parts Tracker")
-        self.root.geometry("800x600")
-        
-        # Ensure window is visible and on top
-        self.root.lift()
-        self.root.attributes('-topmost', True)
-        
-        # Center the window on screen
-        self.center_window()
-        
-        print("Initializing database...")
-        # Initialize database
-        init_database()
-        print("Database initialized successfully")
-        
-        # Variables
-        self.order = None
-        self.scrap_entries = []
-        self.is_admin = False
-        self.current_user = ""
-        self.operator_number = None
-        
-        # Hide main window until login completes
-        self.root.withdraw()
-        
-        print("Starting login process...")
-        # Start with login
-        self.show_login()
+        try:
+            print("Initializing PartsTrackerGUI...")
+            self.root = root
+            self.root.title("Parts Tracker")
+            self.root.geometry("800x600")
+            
+            # Ensure window is visible and on top
+            self.root.lift()
+            self.root.attributes('-topmost', True)
+            
+            # Center the window on screen
+            self.center_window()
+            
+            print("Initializing database...")
+            # Initialize database
+            init_database()
+            print("Database initialized successfully")
+            
+            # Variables
+            self.order = None
+            self.scrap_entries = []
+            self.is_admin = False
+            self.current_user = ""
+            self.operator_number = None
+            
+            print("Starting login process...")
+            # Start with login
+            self.show_login()
+            
+        except Exception as e:
+            print(f"Error in PartsTrackerGUI.__init__: {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Initialization Error", f"Failed to initialize application: {e}")
+            try:
+                self.root.destroy()
+            except:
+                pass
+            raise
     
     def center_window(self):
         """Center the main window on the screen"""
@@ -589,9 +620,21 @@ class PartsTrackerGUI:
         self.finish_btn.config(state=state)
     
     def logout(self):
-        self.root.withdraw()
+        # Clear all widgets from main window
         for widget in self.root.winfo_children():
             widget.destroy()
+        
+        # Reset user state
+        self.is_admin = False
+        self.current_user = ""
+        self.operator_number = None
+        self.order = None
+        self.scrap_entries = []
+        
+        # Reset window title
+        self.root.title("Parts Tracker")
+        
+        # Show login screen again
         self.show_login()
     
     def refresh_orders(self):
@@ -802,15 +845,31 @@ def main():
             
             # Ensure root window gets focus and starts mainloop
             root.focus_force()
+            print("Starting main event loop...")
             root.mainloop()
+            print("Main event loop ended")
             
         except tk.TclError as gui_error:
             print(f"GUI display error: {gui_error}")
+            messagebox.showerror("Error", f"GUI display error: {gui_error}")
+            input("Press Enter to continue...")  # Keep window open to see error
             root.destroy()
             raise Exception("GUI cannot be displayed")
+        except Exception as app_error:
+            print(f"Application error: {app_error}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Application Error", f"Application error: {app_error}")
+            input("Press Enter to continue...")  # Keep window open to see error
+            raise
             
     except Exception as e:
         print(f"Starting command-line mode. (Reason: {e})")
+        try:
+            messagebox.showerror("Error", f"Application failed to start: {e}\n\nFalling back to command-line mode.")
+        except:
+            pass  # messagebox might not work if GUI failed
+        input("Press Enter to continue with command-line mode...")
         run_command_line_mode()
 
 
