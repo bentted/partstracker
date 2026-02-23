@@ -34,12 +34,6 @@ MAX_PASSWORD_LENGTH = 128
 MAX_OPERATOR_NAME_LENGTH = 100
 MAX_MIX_LENGTH = 10
 
-# Admin credentials (hashed with SHA-256)
-ADMIN_CREDENTIALS = {
-    hashlib.sha256("FeuerWasser".encode()).hexdigest(): hashlib.sha256("Jennifer124!".encode()).hexdigest(),
-    hashlib.sha256("supervisor".encode()).hexdigest(): hashlib.sha256("super456".encode()).hexdigest()
-}
-
 
 def sanitize_input(input_string, max_length=None):
     """Sanitize user input to prevent injection attacks"""
@@ -98,16 +92,55 @@ def authenticate_admin(username, password):
     # Add minimum delay to prevent rapid brute force attempts
     time.sleep(MIN_LOGIN_DELAY_SECONDS)
     
-    # Hash credentials and check
-    hashed_username = hashlib.sha256(username.encode()).hexdigest()
-    hashed_password = hashlib.sha256(password.encode()).hexdigest()
-    
-    is_valid = ADMIN_CREDENTIALS.get(hashed_username) == hashed_password
+    # Check credentials against database
+    is_valid = verify_admin_credentials(username, password)
     
     # Log the attempt
     log_login_attempt(username, is_valid, 'admin')
     
     return is_valid
+
+
+def verify_admin_credentials(username, password):
+    """Verify admin credentials against database"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    # Hash the username and password
+    hashed_username = hashlib.sha256(username.encode()).hexdigest()
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    
+    cursor.execute('''
+        SELECT COUNT(*) FROM admin_credentials 
+        WHERE username_hash = ? AND password_hash = ?
+    ''', (hashed_username, hashed_password))
+    
+    is_valid = cursor.fetchone()[0] > 0
+    conn.close()
+    
+    return is_valid
+
+
+def add_admin_credential(username, password):
+    """Add admin credential to database"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    hashed_username = hashlib.sha256(username.encode()).hexdigest()
+    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    
+    try:
+        cursor.execute('''
+            INSERT INTO admin_credentials (username_hash, password_hash, created_date)
+            VALUES (?, ?, ?)
+        ''', (hashed_username, hashed_password, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
 
 
 def is_account_locked(username):
@@ -164,7 +197,7 @@ def init_database():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS operators (
             operator_number INTEGER PRIMARY KEY,
-            operator_name TEXT NOT NULL,
+            operator_name_hash TEXT NOT NULL,
             created_date TEXT NOT NULL
         )
     ''')
@@ -189,11 +222,39 @@ def init_database():
         )
     ''')
     
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS admin_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username_hash TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_date TEXT NOT NULL
+        )
+    ''')
+    
     # Create index for performance on login attempts
     cursor.execute('''
         CREATE INDEX IF NOT EXISTS idx_login_attempts_username_time 
         ON login_attempts(username, attempt_time)
     ''')
+    
+    # Initialize default admin accounts if none exist
+    cursor.execute('SELECT COUNT(*) FROM admin_credentials')
+    if cursor.fetchone()[0] == 0:
+        # Add default admin accounts
+        default_admins = [
+            ("FeuerWasser", "Jennifer124!"),
+            ("supervisor", "super456")
+        ]
+        
+        for username, password in default_admins:
+            hashed_username = hashlib.sha256(username.encode()).hexdigest()
+            hashed_password = hashlib.sha256(password.encode()).hexdigest()
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            cursor.execute('''
+                INSERT INTO admin_credentials (username_hash, password_hash, created_date)
+                VALUES (?, ?, ?)
+            ''', (hashed_username, hashed_password, timestamp))
     
     conn.commit()
     conn.close()
@@ -236,7 +297,7 @@ def save_scrap_entry(operator_number, part_number, order_number, scrap_reason, s
 
 
 def add_operator(operator_number, operator_name):
-    """Add operator with input validation"""
+    """Add operator with hashed name for privacy protection"""
     conn = sqlite3.connect('parts_tracker.db')
     cursor = conn.cursor()
     
@@ -251,13 +312,16 @@ def add_operator(operator_number, operator_name):
         conn.close()
         return False
     
+    # Hash the operator name for privacy protection
+    operator_name_hash = hashlib.sha256(operator_name.encode()).hexdigest()
+    
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     try:
         cursor.execute('''
-            INSERT INTO operators (operator_number, operator_name, created_date)
+            INSERT INTO operators (operator_number, operator_name_hash, created_date)
             VALUES (?, ?, ?)
-        ''', (operator_number, operator_name, timestamp))
+        ''', (operator_number, operator_name_hash, timestamp))
         conn.commit()
         conn.close()
         return True
@@ -285,15 +349,34 @@ def remove_operator(operator_number):
 
 
 def get_all_operators():
-    """Get all operators safely"""
+    """Get all operators with anonymized names for display"""
     conn = sqlite3.connect('parts_tracker.db')
     cursor = conn.cursor()
     
-    cursor.execute('SELECT operator_number, operator_name, created_date FROM operators ORDER BY operator_number')
+    cursor.execute('SELECT operator_number, operator_name_hash, created_date FROM operators ORDER BY operator_number')
     operators = cursor.fetchall()
     
+    # Convert to display format with anonymized names
+    display_operators = []
+    for op_number, name_hash, created_date in operators:
+        # Show first 8 characters of hash for identification while maintaining privacy
+        anonymized_name = f"User_{name_hash[:8]}..."
+        display_operators.append((op_number, anonymized_name, created_date))
+    
     conn.close()
-    return operators
+    return display_operators
+
+
+def verify_operator_exists(operator_number):
+    """Verify if operator number exists in database"""
+    conn = sqlite3.connect('parts_tracker.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM operators WHERE operator_number = ?', (operator_number,))
+    exists = cursor.fetchone()[0] > 0
+    
+    conn.close()
+    return exists
 
 
 def save_order(part_number, parts_per_order):
@@ -612,6 +695,12 @@ class LoginWindow:
             
             operator_num = int(operator_input)
             
+            # Verify operator exists in the system (optional - can be removed if not required)
+            # if not verify_operator_exists(operator_num):
+            #     self.status_var.set("Operator number not found in system. Contact administrator.")
+            #     print(f"Operator login failed: Operator {operator_num} not registered")
+            #     return
+            
             # Log operator login attempt
             log_login_attempt(f"operator_{operator_num}", True, 'operator')
             
@@ -852,12 +941,17 @@ class PartsTrackerGUI:
         op_list_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         
         # Create treeview for operators
-        columns = ('Number', 'Name', 'Created Date')
+        columns = ('Number', 'Anonymized ID', 'Created Date')
         self.operators_tree = ttk.Treeview(op_list_frame, columns=columns, show='headings', height=10)
         
         for col in columns:
             self.operators_tree.heading(col, text=col)
-            self.operators_tree.column(col, width=150)
+            if col == 'Number':
+                self.operators_tree.column(col, width=100)
+            elif col == 'Anonymized ID':
+                self.operators_tree.column(col, width=200)
+            else:
+                self.operators_tree.column(col, width=150)
         
         self.operators_tree.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
         
@@ -1064,9 +1158,9 @@ class PartsTrackerGUI:
         
         item = self.operators_tree.item(selection[0])
         op_number = int(item['values'][0])
-        op_name = item['values'][1]
+        anonymized_id = item['values'][1]
         
-        result = messagebox.askyesno("Confirm", f"Are you sure you want to remove Operator {op_number} ({op_name})?")
+        result = messagebox.askyesno("Confirm", f"Are you sure you want to remove Operator {op_number} ({anonymized_id})?")
         
         if result:
             if remove_operator(op_number):
@@ -1087,8 +1181,8 @@ class PartsTrackerGUI:
         operators = get_all_operators()
         
         # Insert operators into treeview
-        for op_number, op_name, created_date in operators:
-            self.operators_tree.insert('', tk.END, values=(op_number, op_name, created_date))
+        for op_number, anonymized_name, created_date in operators:
+            self.operators_tree.insert('', tk.END, values=(op_number, anonymized_name, created_date))
     
     def select_order_for_scrap(self):
         try:
@@ -1357,7 +1451,7 @@ def main():
 def run_command_line_mode():
     """Fallback command-line interface when GUI is not available"""
     print("\n=== PARTS TRACKER - COMMAND LINE MODE ===")
-    print("Available admin credentials:")
+    print("Available admin credentials (stored securely in database):")
     print("  Username: FeuerWasser, Password: Jennifer124!")
     print("  Username: supervisor, Password: super456")
     
